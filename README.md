@@ -1,157 +1,141 @@
 # Project Nebula — Redacted Case Study
 
+## Executive Summary
+Project Nebula (redacted subscription/credits platform) was assessed under explicit authorization. We combined web/API testing and client/binary analysis to understand how licenses/credits are validated and where server-side weaknesses might manifest.
 
-Executive Summary
+### 🔍 Key Highlights
+- **Edge exhibited Host header-driven behavior** on benign paths - used for fingerprinting only
+- **SSTI-like indicators** on JSON endpoints (HTML error pages instead of JSON; stable length deltas)
+- **Supabase backend** observed with contrasting REST/GraphQL behavior
+- **Windows client** performs OpenSSL EVP signature verification with embedded public key
+- **Frida proved unstable** - used x64dbg + IDA + ProcMon for verification flow mapping
 
-Project Nebula (redacted subscription/credits platform) was assessed under explicit authorization. We combined web/API testing and client/binary analysis to understand how licenses/credits are validated and where server‑side weaknesses might manifest.
+## ⚖️ Legal & Ethics
+- All testing conducted with written permission
+- **No secrets, service keys, or vendor binaries** published
+- PoCs default to `SAFE_MODE=1` and target dummy lab endpoints
+- **Never run against systems you do not own or control**
 
-Highlights
+## 🎯 Scope & Targets (Redacted)
+- **Primary API (Edge):** JSON endpoints (`/api/v6/{check-license, insertkey, auth, users, profiles, transactions, licenses}`)
+- **Secondary host:** Pivot/smuggling experiment path (excluded from public repo)
+- **Supabase project:** REST vs GraphQL behavior contrasts
+- **Desktop client:** Windows executable (PyInstaller/pyarmor) with Python stdlib + crypto modules
 
-Edge exhibited Host header–driven behavior on a benign path; safely leveraged for fingerprinting only.
+## 🚨 Key Findings — Web/API
 
-SSTI‑like indicators present on certain JSON endpoints (HTML error pages instead of JSON; stable length deltas) — useful for oracle‑style inference but no egress was possible.
+### Host Header Behavior on Safe Path
+```
+Deterministic 400 with nearly fixed body length for crafted Host values
+Used for edge fingerprinting only
+```
 
-Supabase backend observed; GraphQL strictly rejected invalid keys; public REST gateway frequently returned a stub response (sanitized here).
+### SSTI Indicators on API Endpoints
+```
+Specific encodings (raw → %7B%7B → %257B) returned HTML error pages instead of JSON
+Consistent length deltas enabled stable diffing
+Egress was blocked - only timing/error-based inference applicable
+```
 
-Client (Windows, PyInstaller/pyarmor) performs OpenSSL EVP signature verification with an embedded public key. Network tampering alone doesn’t bypass the gate.
+### Supabase Behavior
+```
+REST gateway: Frequently responded with stub JSON { "msg": "Hello World" }
+GraphQL endpoint: Strictly rejected invalid keys with "Invalid API key"
+```
 
-Frida proved unstable; lab‑confirmed verification flow using x64dbg + IDA + ProcMon instead.
+### Metadata SSRF Attempts
+```
+Benign probes toward cloud metadata IP (169.254.169.254) blocked at edge
+Returned provider-style block page
+```
 
-Legal & Ethics
+## 🔬 Key Findings — Client/Binary (Windows)
 
-All testing conducted with written permission; this case study is a sanitized learning artifact.
+### Packaging & Analysis
+- **Packaging:** PyInstaller + pyarmor
+- **Crypto path:** Python layer → native OpenSSL via `EVP_DigestVerify*`
+- **Embedded public key:** PEM markers present in binary
+- **Persistence:** SQLite DB (`Data.db / Data_backup_*.db`)
+- **Registry:** UI/telemetry keys under `HKCU\Software\<VendorAlias>\`
 
-No secrets, service keys, or vendor binaries are published.
+### Debugging Constraints
+```
+MITM: cacert.pem required for startup; tampering caused immediate abort
+Frida: Unstable on target
+Solution: x64dbg for mapping EVP_DigestVerifyFinal (EAX=1 valid, 0=invalid)
+```
 
-PoCs default to SAFE_MODE=1 and target dummy lab endpoints. Never run against systems you do not own or control.
+## 📋 Evidence & MITM/Proxy Reports (Sanitized)
 
-Scope & Targets (Redacted)
-
-Primary API (Edge): JSON endpoints similar to /api/v6/{check-license, insertkey, auth, users, profiles, transactions, licenses}.
-
-Secondary host (pivot only): kept as a smuggling/bypass experiment path; not necessary for the public repo.
-
-Supabase project: base URL identified (redacted); REST vs GraphQL behavior contrasts: REST often returned a stub JSON body; GraphQL returned Invalid API key for wrong/placeholder keys.
-
-Desktop client: Windows executable (PyInstaller/pyarmor), includes Python stdlib and third‑party crypto modules; consult Client/Binary section.
-
-Key Findings — Web/API
-
-Host header behavior on safe path
-
-Deterministic 400 with nearly fixed body length for crafted Host values on a benign endpoint; used for edge fingerprinting only.
-
-SSTI indicators on API endpoints
-
-Specific encodings (raw → %7B%7B → %257B variants) returned HTML error pages instead of JSON on two endpoints (redacted names), confirming template/rendering path traversal.
-
-Consistent length deltas enabled stable diffing; egress was blocked (no OAST hits), so only timing/error‑based inference applicable.
-
-Supabase behavior
-
-REST gateway frequently responded with a stub JSON: { "msg": "Hello World" } to kept‑safe probes.
-
-GraphQL endpoint (/graphql/v1) rejected placeholder/anon keys with Invalid API key (expected), confirming stricter enforcement.
-
-Metadata SSRF attempts
-
-Benign probes towards cloud metadata IP (169.254.169.254) via header manipulation were blocked at edge, returning a provider‑style block page.
-
-Key Findings — Client/Binary (Windows)
-
-Packaging: PyInstaller + pyarmor. The app bundles its Python code and crypto libs.
-
-Crypto path: Python layer calls into native OpenSSL; observed strings and codepaths indicate EVP_DigestVerify* with final decision at EVP_DigestVerifyFinal.
-
-Embedded public key: PEM markers present (public key / certificate block). Signature of server‑issued tokens is verified locally.
-
-Persistence: SQLite DB present (e.g., Data.db / Data_backup_*.db). No explicit plain‑text license field found.
-
-Registry: UI/telemetry keys under HKCU\Software\<VendorAlias>\… (e.g., display configs). Useful for filtering in ProcMon.
-
-MITM constraints: cacert.pem required for startup; removing/tampering caused immediate abort.
-
-Debugger strategy: Frida unstable on this target; switch to x64dbg for mapping: identify the indirect call to EVP_DigestVerifyFinal, observe EAX (1=valid, 0=invalid), and confirm UI transition logic depends on this gate. No bypass code is included in public repo; notes only.
-
-Evidence & MITM/Proxy Reports (Sanitized)
-
-Edge fingerprinting (safe)
-
+### Edge Fingerprinting (Safe)
+```bash
 # scripts/rest_probe.sh (SAFE_MODE)
-# Expected: structured 400 with stable length on benign path for crafted Host
 HTTP/2 400
 content-type: text/html
 <redacted body> # ~155 bytes (example)
+```
 
-API SSTI indicator (safe)
-
-# Encodings: raw → %7B%7B → %257B
-# Expected: switch from JSON to HTML error document; record lengths and status.
+### API SSTI Indicator (Safe)
+```
+Encodings: raw → %7B%7B → %257B
+Expected: switch from JSON to HTML error document
 HTTP/2 403
 content-type: text/html; charset=UTF-8
-<html>… legacy conditional comments …</html>
+```
 
-REST gateway stub (safe)
+### REST Gateway Stub (Safe)
+```json
 GET /rest/v1/<table>?select=*
 HTTP/2 200
 { "msg": "Hello World" }
+```
 
-GraphQL strictness (safe)
+### GraphQL Strictness (Safe)
+```json
 POST /graphql/v1 {"query":"{ __typename }"}
 HTTP/2 401
 { "message": "Invalid API key", "hint": "Double check your Supabase key." }
+```
 
-Timing‑Oracle Research (Sanitized)
+## ⏱️ Timing-Oracle Research (Sanitized)
+**Concept:** Use error/timing deltas for character-by-character prefix extension testing
 
-Concept: use error/timing deltas to test for character‑by‑character prefix extension of a protected secret (e.g., service key).
+**Observations:** 
+- Jitter requires averaging and heavier loop workload
+- Consistent but weak signals observed
+- Work halted for public release
 
-Observations: jitter requires averaging and heavier loop workload; consistent but weak signals were observed. Work halted for public release.
+**Note:** Repo provides research notes, not exploit code.
 
-Repo provides research notes, not exploit code.
+## 🛡️ Defensive Recommendations
 
-Defensive Recommendations
+### Immediate Actions
+- Enforce strict Host header handling (normalize/validate via trusted proxy headers)
+- Ensure templating layers for API responses cannot be reached by untrusted input
+- Prefer strict JSON serializers over template rendering for API endpoints
 
-Enforce strict Host header handling (normalize/validate via trusted proxy headers only).
+### Long-term Strategies
+- Continue blocking egress from API tiers
+- Consider canary outbound endpoints to audit attempted exfil
+- For desktop clients: prefer short-lived tokens or server-side session checks
+- Monitor and rate-limit unusual sequences that could build timing oracles
 
-Ensure templating layers for API responses cannot be reached by untrusted input; prefer strict JSON serializers.
+## 📚 Methodology & Playbooks
 
-Continue to block egress from API tiers; consider canary outbound endpoints to audit attempted exfil.
+### Web/API Assessment
+1. **Recon:** Enumerate endpoints; capture baseline response shapes/lengths
+2. **Probe:** Inject harmless encodings; compare JSON vs HTML response transitions  
+3. **Egress test:** DNS/HTTP callbacks (expect blocks; record results)
+4. **Logging:** Save headers/bodies per probe; compute size diffs
 
-For desktop clients, prefer short‑lived tokens or server‑side session checks; assume public keys and verification code are recoverable by users.
+### Client/Binary Analysis (Windows)
+1. **Unpack** PyInstaller bundle; catalog Python modules and crypto libs
+2. **Search markers:** `EVP_DigestVerifyFinal`, `-----BEGIN`, `sqlite3`, `Data.db`
+3. **ProcMon filters:** Process Name = app; include `RegCreateKey`, `RegSetValue`, `WriteFile`
+4. **x64dbg:** Identify indirect call to `EVP_DigestVerifyFinal`; watch EAX; confirm UI dependency
 
-Monitor and rate‑limit unusual sequences that could be used to build timing oracles.
-
-Methodology & Playbooks
-Web/API
-
-Recon: enumerate endpoints; capture baseline response shapes and lengths.
-
-Probe: inject harmless encodings; compare JSON vs HTML response transitions.
-
-Egress test: DNS/HTTP callbacks (expect to be blocked; record).
-
-Logging: save headers and bodies per probe; compute size diffs.
-
-Client/Binary (Windows)
-
-Unpack PyInstaller bundle; catalog Python modules and crypto libs.
-
-Search markers: EVP_DigestVerifyFinal, -----BEGIN, sqlite3, Data.db.
-
-ProcMon filters: Process Name is the app; include RegCreateKey, RegSetValue, WriteFile; path contains Data.db.
-
-x64dbg: identify indirect call to EVP_DigestVerifyFinal; watch EAX; confirm UI transition depends on return value.
-
-Tools & Environment
-
-HTTP tooling: curl, jq, Burp/mitmproxy (observation only)
-
-Recon: ffuf, dirsearch, wayback tools (optional)
-
-Debuggers: x64dbg, IDA, ProcMon; Frida explored but unstable
-
-Scripts: small scanners (PEM/EVP markers), safe REST/GraphQL probes (with dummy hosts)
-
-
-
-
+## 🛠️ Tools & Environment
+- **HTTP tooling:** curl, jq, Burp/mitmproxy (observation only)
+- **Recon:** ffuf, dirsearch, wayback tools (optional)
+- **Debuggers:** x64dbg, IDA, ProcMon; Frida explored but unstable
+- **Scripts:** Custom scanners (PEM/EVP markers), safe REST/GraphQL probes
